@@ -6,22 +6,28 @@ IG Markets REST API Library for Python
 http://labs.ig.com/rest-trading-api-reference
 Original version by Lewis Barber - 2014 - http://uk.linkedin.com/in/lewisbarber/
 Modified by Femto Trader - 2014-2015 - https://github.com/femtotrader/
-"""
+"""  # noqa
 
 import json
 
 from requests import Session
 
+import logging
+import time
+
 from .utils import (_HAS_PANDAS, _HAS_MUNCH)
 from .utils import (conv_resol, conv_datetime, conv_to_ms)
+
+
+logger = logging.getLogger(__name__)
+
 
 class IGException(Exception):
     pass
 
+
 class IGSessionCRUD(object):
-    """
-    Session with CRUD operation
-    """
+    """Session with CRUD operation"""
     CLIENT_TOKEN = None
     SECURITY_TOKEN = None
 
@@ -56,7 +62,7 @@ class IGSessionCRUD(object):
         :return:
         """
         if session is None:
-            session = self.session # requests Session
+            session = self.session   # requests Session
         else:
             session = session
         return session
@@ -72,6 +78,9 @@ class IGSessionCRUD(object):
         response = session.post(url,
                                 data=json.dumps(params),
                                 headers=self.HEADERS['BASIC'])
+        if not response.ok:
+            raise(Exception("HTTP status code %s %s " %
+                            (response.status_code, response.text)))
         self._set_headers(response.headers, True)
         self.create = self._create_logged_in
         return response
@@ -151,7 +160,6 @@ class IGSessionCRUD(object):
         }
 
 
-
 class IGService:
 
     D_BASE_URL = {
@@ -173,7 +181,7 @@ class IGService:
 
         try:
             self.BASE_URL = self.D_BASE_URL[acc_type.lower()]
-        except:
+        except Exception:
             raise(Exception("Invalid account type specified, please provide"
                             "LIVE or DEMO."))
 
@@ -183,7 +191,7 @@ class IGService:
         self.return_munch = _HAS_MUNCH
 
         if session is None:
-            self.session = Session() # Requests Session (global)
+            self.session = Session()  # Requests Session (global)
         else:
             self.session = session
 
@@ -196,8 +204,11 @@ class IGService:
         for example)
         """
         if session is None:
-            session = self.session # requests Session
+            session = self.session  # requests Session
         else:
+            assert(isinstance(session, Session)), \
+                "session must be <requests.session.Session object> not %s" \
+                % type(session)
             session = session
         return session
 
@@ -207,7 +218,7 @@ class IGService:
         response = self.crud_session.req(action, endpoint, params, session)
         return response
 
-    ########## PARSE_RESPONSE ##########
+    # ---------- PARSE_RESPONSE ----------- #
 
     def parse_response_without_exception(self, *args, **kwargs):
         """Parses JSON response
@@ -225,11 +236,9 @@ class IGService:
             raise(Exception(response['errorCode']))
         return response
 
-    ############ END ############
+    # --------- END -------- #
 
-
-
-    ########## DATAFRAME TOOLS ##########
+    # ------ DATAFRAME TOOLS -------- #
 
     def colname_unique(self, d_cols):
         """Returns a set of column names (unique)"""
@@ -258,13 +267,11 @@ class IGService:
                     raise(NotImplementedError("col overlap: %r" % col))
         return data
 
-    ############ END ############
+    # -------- END ------- #
 
+    # -------- ACCOUNT ------- #
 
-
-    ########## ACCOUNT ##########
-
-    def fetch_accounts(self, session = None):
+    def fetch_accounts(self, session=None):
         """Returns a list of accounts belonging to the logged-in client"""
         params = {}
         endpoint = '/accounts'
@@ -275,7 +282,8 @@ class IGService:
             import pandas as pd
             data = pd.DataFrame(data['accounts'])
             d_cols = {
-                'balance': [u'available', u'balance', u'deposit', u'profitLoss']
+                'balance': [u'available', u'balance',
+                            u'deposit', u'profitLoss']
             }
             data = self.expand_columns(data, d_cols, False)
 
@@ -290,7 +298,9 @@ class IGService:
         return data
 
     def fetch_account_activity_by_period(self, milliseconds, session=None):
-        """Returns the account activity history for the last specified period"""
+        """
+        Returns the account activity history for the last specified period
+        """
         milliseconds = conv_to_ms(milliseconds)
         params = {}
         url_params = {
@@ -343,8 +353,9 @@ class IGService:
 
         return data
 
-    def fetch_transaction_history(self, trans_type=None, from_date=None, to_date=None,
-                                  max_span_seconds=None, page_size=None, page_number=None,
+    def fetch_transaction_history(self, trans_type=None, from_date=None,
+                                  to_date=None, max_span_seconds=None,
+                                  page_size=None, page_number=None,
                                   session=None):
         """Returns the transaction history for the specified transaction
         type and period"""
@@ -369,7 +380,7 @@ class IGService:
         endpoint = '/history/transactions'
         action = 'read'
 
-        self.crud_session.HEADERS['LOGGED_IN']['Version'] = 2
+        self.crud_session.HEADERS['LOGGED_IN']['Version'] = "2"
         response = self._req(action, endpoint, params, session)
         del(self.crud_session.HEADERS['LOGGED_IN']['Version'])
         data = self.parse_response(response.text)
@@ -387,11 +398,9 @@ class IGService:
 
         return data
 
-    ############ END ############
+    # -------- END -------- #
 
-
-
-    ########## DEALING ##########
+    # -------- DEALING -------- #
 
     def fetch_deal_by_deal_reference(self, deal_reference, session=None):
         """Returns a deal confirmation for the given deal reference"""
@@ -401,11 +410,19 @@ class IGService:
         }
         endpoint = '/confirms/{deal_reference}'.format(**url_params)
         action = 'read'
-        response = self._req(action, endpoint, params, session)
+        for i in range(5):
+            response = self._req(action, endpoint, params, session)
+            if response.status_code == 404:
+                logger.info(
+                    "Deal reference %s not found, retrying." % deal_reference
+                )
+                time.sleep(1)
+            else:
+                break
         data = self.parse_response(response.text)
         return data
 
-    def fetch_open_positions(self, session = None):
+    def fetch_open_positions(self, session=None):
         """Returns all open positions for the active account"""
         params = {}
         endpoint = '/positions'
@@ -419,8 +436,8 @@ class IGService:
 
             d_cols = {
                 'market': ['bid', 'delayTime', 'epic', 'expiry', 'high',
-                           'instrumentName', 'instrumentType', 'lotSize', 'low',
-                           'marketStatus', 'netChange', 'offer',
+                           'instrumentName', 'instrumentType', 'lotSize',
+                           'low', 'marketStatus', 'netChange', 'offer',
                            'percentageChange', 'scalingFactor',
                            'streamingPricesAvailable', 'updateTime'],
                 'position': ['contractSize', 'controlledRisk', 'createdDate',
@@ -461,9 +478,10 @@ class IGService:
             raise IGException(response.text)
 
     def create_open_position(self, currency_code, direction, epic, expiry,
-                             force_open, guaranteed_stop, level, limit_distance,
-                             limit_level, order_type, quote_id, size,
-                             stop_distance, stop_level, session=None):
+                             force_open, guaranteed_stop, level,
+                             limit_distance, limit_level, order_type,
+                             quote_id, size, stop_distance, stop_level,
+                             session=None):
         """Creates an OTC position"""
         params = {
             'currencyCode': currency_code,
@@ -512,7 +530,7 @@ class IGService:
         else:
             raise IGException(response.text)
 
-    def fetch_working_orders(self, session = None):
+    def fetch_working_orders(self, session=None):
         """Returns all open working orders for the active account"""
         params = {}
         endpoint = '/workingorders'
@@ -536,7 +554,8 @@ class IGService:
                                      u'currencyCode', u'contingentLimit',
                                      u'trailingTriggerIncrement', u'dealId',
                                      u'contingentStop', u'goodTill',
-                                     u'controlledRisk', u'trailingStopIncrement',
+                                     u'controlledRisk',
+                                     u'trailingStopIncrement',
                                      u'createdDate', u'epic',
                                      u'trailingTriggerDistance', u'dma']
             }
@@ -547,7 +566,8 @@ class IGService:
 
             col_overlap_allowed = ['epic']
 
-            data = self.expand_columns(data, d_cols, False, col_overlap_allowed)
+            data = self.expand_columns(data, d_cols, False,
+                                       col_overlap_allowed)
 
             # d = data.to_dict()
             # data = pd.concat(list(map(pd.DataFrame, d.values())),
@@ -563,9 +583,9 @@ class IGService:
                              good_till_date=None, deal_reference=None,
                              force_open=False, session=None):
         """Creates an OTC working order"""
-
+        VERSION = 2
         if good_till_date is not None and type(good_till_date) is not int:
-            good_till_date = conv_datetime(good_till_date, 1)
+            good_till_date = conv_datetime(good_till_date, VERSION)
 
         params = {
             'currencyCode': currency_code,
@@ -594,8 +614,8 @@ class IGService:
         endpoint = '/workingorders/otc'
         action = 'create'
 
-        self.crud_session.HEADERS['LOGGED_IN']['Version'] = 2
-        print(params)
+        self.crud_session.HEADERS['LOGGED_IN']['Version'] = str(VERSION)
+        # print(params)
         response = self._req(action, endpoint, params, session)
         del(self.crud_session.HEADERS['LOGGED_IN']['Version'])
 
@@ -648,11 +668,9 @@ class IGService:
         else:
             raise IGException(response.text)
 
-    ############ END ############
+    # -------- END -------- #
 
-
-
-    ########## MARKETS ##########
+    # -------- MARKETS -------- #
 
     def fetch_client_sentiment_by_instrument(self, market_id, session=None):
         """Returns the client sentiment for the given instrument's market"""
@@ -699,10 +717,11 @@ class IGService:
             data['markets'] = pd.DataFrame(data['markets'])
             if len(data['markets']) == 0:
                 columns = ['bid', 'delayTime', 'epic', 'expiry', 'high',
-                           'instrumentName', 'instrumentType', 'lotSize', 'low',
-                           'marketStatus', 'netChange', 'offer', 'otcTradeable',
-                           'percentageChange', 'scalingFactor',
-                           'streamingPricesAvailable', 'updateTime']
+                           'instrumentName', 'instrumentType', 'lotSize',
+                           'low', 'marketStatus', 'netChange', 'offer',
+                           'otcTradeable', 'percentageChange',
+                           'scalingFactor', 'streamingPricesAvailable',
+                           'updateTime']
                 data['markets'] = pd.DataFrame(columns=columns)
             data['nodes'] = pd.DataFrame(data['nodes'])
             if len(data['nodes']) == 0:
@@ -798,6 +817,9 @@ class IGService:
     def format_prices(self, prices, flag_calc_spread=False):
         """Format prices data as a DataFrame with hierarchical columns"""
 
+        if len(prices) == 0:
+            raise(Exception("Historical price data not found"))
+
         import pandas as pd
         from pandas.io.json import json_normalize
 
@@ -809,10 +831,11 @@ class IGService:
                 'closePrice.%s' % typ: 'Close',
                 'lastTradedVolume': 'Volume'
             })
-        last = prices[0]['lastTradedVolume'] or prices[0]['closePrice']['lastTraded']
+        last = prices[0]['lastTradedVolume'] \
+            or prices[0]['closePrice']['lastTraded']
         df = json_normalize(prices)
         df = df.set_index('snapshotTime')
-        df.index = pd.to_datetime(df.index,format="%Y:%m:%d-%H:%M:%S")
+        df.index = pd.to_datetime(df.index, format="%Y:%m:%d-%H:%M:%S")
         df.index.name = 'DateTime'
 
         df_ask = df[['openPrice.ask', 'highPrice.ask',
@@ -855,7 +878,7 @@ class IGService:
         """Returns a list of historical prices for the given epic, resolution,
         number of points"""
         params = {}
-        if resolution:
+        if resolution and _HAS_PANDAS and self.return_dataframe:
             params['resolution'] = conv_resol(resolution)
         if start_date:
             params['from'] = start_date
@@ -869,7 +892,7 @@ class IGService:
             params['pageNumber'] = pagenumber
         endpoint = '/prices/' + epic
         action = 'read'
-        self.crud_session.HEADERS['LOGGED_IN']['Version'] = 3
+        self.crud_session.HEADERS['LOGGED_IN']['Version'] = "3"
         response = self._req(action, endpoint, params, session)
         del(self.crud_session.HEADERS['LOGGED_IN']['Version'])
         data = self.parse_response(response.text)
@@ -878,10 +901,12 @@ class IGService:
         return(data)
 
     def fetch_historical_prices_by_epic_and_num_points(self, epic, resolution,
-                                                       numpoints, session=None):
+                                                       numpoints,
+                                                       session=None):
         """Returns a list of historical prices for the given epic, resolution,
         number of points"""
-        resolution = conv_resol(resolution)
+        if _HAS_PANDAS and self.return_dataframe:
+            resolution = conv_resol(resolution)
         params = {}
         url_params = {
             'epic': epic,
@@ -902,7 +927,8 @@ class IGService:
                                                        session=None):
         """Returns a list of historical prices for the given epic, resolution,
         multiplier and date range"""
-        resolution = conv_resol(resolution)
+        if _HAS_PANDAS and self.return_dataframe:
+            resolution = conv_resol(resolution)
 
         # v2
         # start_date = conv_datetime(start_date, 2)
@@ -932,15 +958,13 @@ class IGService:
         action = 'read'
         response = self._req(action, endpoint, params, session)
         data = self.parse_response(response.text)
-        if self.return_dataframe:
+        if _HAS_PANDAS and self.return_dataframe:
             data['prices'] = self.format_prices(data['prices'])
         return data
 
-    ############ END ############
+    # -------- END -------- #
 
-
-
-    ######### WATCHLISTS ########
+    # -------- WATCHLISTS -------- #
 
     def fetch_all_watchlists(self, session=None):
         """Returns all watchlists belonging to the active account"""
@@ -1018,11 +1042,9 @@ class IGService:
         response = self._req(action, endpoint, params, session)
         return response.text
 
-    ############ END ############
+    # -------- END -------- #
 
-
-
-    ########### LOGIN ###########
+    # -------- LOGIN -------- #
 
     def logout(self, session=None):
         """Log out of the current session"""
@@ -1043,7 +1065,7 @@ class IGService:
         # this is the first create (BASIC_HEADERS)
         response = self._req(action, endpoint, params, session)
         data = self.parse_response(response.text)
-        self.ig_session = data # store IG session
+        self.ig_session = data  # store IG session
         return data
 
     def switch_account(self, account_id, default_account, session=None):
@@ -1067,11 +1089,9 @@ class IGService:
         response = self._req(action, endpoint, params, session)
         data = self.parse_response(response.text)
         return data
-    ############ END ############
+    # -------- END -------- #
 
-
-
-    ########## GENERAL ##########
+    # -------- GENERAL -------- #
 
     def get_client_apps(self, session=None):
         """Returns a list of client-owned applications"""
@@ -1099,9 +1119,11 @@ class IGService:
         return data
 
     def disable_client_app_key(self, session=None):
-        """Disables the current application key from processing further requests.
+        """
+        Disables the current application key from processing further requests.
         Disabled keys may be reenabled via the My Account section on
-        the IG Web Dealing Platform."""
+        the IG Web Dealing Platform.
+        """
         params = {}
         endpoint = '/operations/application/disable'
         action = 'update'
@@ -1109,4 +1131,4 @@ class IGService:
         data = self.parse_response(response.text)
         return data
 
-    ############ END ############
+    # -------- END -------- #
